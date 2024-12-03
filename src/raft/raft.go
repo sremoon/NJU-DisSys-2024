@@ -19,6 +19,7 @@ package raft
 
 import "sync"
 import "labrpc"
+import "time"
 
 // import "bytes"
 // import "encoding/gob"
@@ -89,16 +90,30 @@ type Raft struct {
 	// Additional args needed
 	// Mark which states it is, leader / candidate / follower
 	state int
+	// get how many server voted
 	numVote int
+	// time to do something
+	timer *time.Timer
 }
 
 // Some sugar function for Raft
 func (rf *Raft) lastLogIndex() int { return len(rf.log) - 1 }
 func (rf *Raft) lastLogTerm() int { return rf.log[rf.lastLogIndex()].term }
+const _Heartbeat = 0
+const _BeCandidate = 1
+func (rf *Raft) setTimer(_type int) {
+	if _type == _Heartbeat {
+		rf.timer = time.NewTimer(time.Duration(90) * time.Millisecond)
+	} else {
+		// For debug, no random, hahaha
+		rf.timer = time.NewTimer(time.Duration(300 + rf.me * 5) * time.Millisecond)
+	}
+}
 func (rf *Raft) followerInit() {
 	if rf.state == follower {
 		return
 	}
+	rf.setTimer(_BeCandidate)
 	rf.state = follower
 	rf.votedFor = -1
 }
@@ -215,9 +230,11 @@ func (rf *Raft) appendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		return
 	}
 	// term is right now
-	if	args.preLogIndex < 0 
-		|| args.preLogIndex > rf.lastLogIndex 
-		|| args.preLogTerm != rf.log[args.preLogIndex].term {
+	if rf.state == follower {
+		rf.setTimer(_BeCandidate)
+	}
+	if	(args.preLogIndex < 0) || (args.preLogIndex > rf.lastLogIndex()) || 
+		(args.preLogTerm != rf.log[args.preLogIndex].term) {
 		return
 	}
 
