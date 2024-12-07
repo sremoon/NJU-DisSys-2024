@@ -65,6 +65,7 @@ const Follower = 2
 
 type Logs struct {
 	Term int
+	Command interface{}
 }
 
 type Raft struct {
@@ -94,6 +95,8 @@ type Raft struct {
 	State int
 	// get how many server voted
 	NumVote int
+	// to execute something
+	ApplyChan chan ApplyMsg
 	// time to do something, Stupid time.timer
 	Timer *time.Timer
 	ResetTimerFlag chan bool
@@ -105,43 +108,15 @@ func (rf *Raft) LastLogTerm() int { return rf.Log[rf.LastLogIndex()].Term }
 const _Heartbeat = 0
 const _BeCandidate = 1
 func (rf *Raft) SetTimer(_type int) {
-	fmt.Printf("Debug message: %d reset time\n", rf.me)
+	//fmt.Printf("Debug message: %d reset time\n", rf.me)
 	// normal case is 5
-	var coef int = 1
+	var coef int = 5
 	if _type == _Heartbeat {
 		var timePass int = 16 * coef
 		rf.Timer = time.NewTimer(time.Duration(timePass) * time.Millisecond)
 	} else {
 		var timePass int = (60 + rand.Intn(30)) * coef
 		rf.Timer = time.NewTimer(time.Duration(timePass) * time.Millisecond)
-	}
-}
-func (rf *Raft) TermCheck(NowTerm int)  {
-	if rf.CurrentTerm < NowTerm {
-		rf.CurrentTerm = NowTerm
-		rf.FollowerInit()
-		go rf.FollowerRun()
-		//fmt.Printf("Debug message: %d term changed to %d\n", rf.me, NowTerm)
-		return 
-	}
-	return 
-}
-func (rf *Raft) FollowerInit() {
-	rf.State = Follower
-	rf.VotedFor = -1
-}
-func (rf *Raft) CandidateInit() {
-	rf.State = Candidate
-}
-func (rf *Raft) LeaderInit() {
-	rf.State = Leader
-
-	rf.NextIndex = make([]int, 0)
-	rf.MatchIndex = make([]int, 0)
-
-	for i := 0; i < len(rf.peers); i ++ {
-		rf.NextIndex = append(rf.NextIndex, len(rf.Log))
-		rf.MatchIndex = append(rf.MatchIndex, 0)
 	}
 }
 
@@ -153,93 +128,26 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 /*
-RequestVote
+Follower Part
 */
 
-type RequestVoteArgs struct {
-	Term int
-	CandidateId int
-	LastLogIndex int
-	LastLogTerm int
-}
-type RequestVoteReply struct {
-	Term int
-	VoteGranted bool
-}
-
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
-/*
-	fmt.Printf("Debug message: requestvote %d[%d] from %d : args[(term)%d,(candidate)%d,%d,%d], reply[%d,%t]\n", 
-		rf.me, rf.VotedFor,args.CandidateId,
-		args.Term,args.CandidateId,args.LastLogIndex,args.LastLogTerm,
-		reply.Term, reply.VoteGranted)
-*/
-	// Your code here.
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// Case 0: too late 
-	rf.TermCheck(args.Term)
-	// Main part
-	reply.Term = rf.CurrentTerm
-	reply.VoteGranted = false
-	// Case 1: too early term
-	if args.Term < rf.CurrentTerm {
-		return
-	}
-	// Case 2: Right term, get votes
-	if	(rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) && 
-		(pair{args.LastLogTerm, args.LastLogIndex}.Islarge(pair{rf.LastLogTerm(), rf.LastLogIndex()}) != -1) {
-			reply.VoteGranted = true
-		rf.VotedFor = args.CandidateId	
-	}
-	if rf.State == Follower {
-		rf.ResetTimerFlag <- true
+func (rf *Raft) CommitApplyMsg() {
+	for rf.LastApplied < rf.CommitIndex {
+		rf.LastApplied += 1
+		rf.ApplyChan <- ApplyMsg{rf.LastApplied, rf.Logs[rf.LastApplied].Command}
 	}
 }
 
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// returns true if labrpc says the RPC was delivered.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
-	fmt.Printf("Debug message: %d[(term)%d] send requestvote %d : args[(term)%d,%d,%d,%d]\n", rf.me, rf.CurrentTerm,server,args.Term,args.CandidateId,args.LastLogIndex,args.LastLogTerm)
-	
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// I'm too late
-	rf.TermCheck(reply.Term)
-	if ok && rf.State == Candidate {
-		if reply.VoteGranted == true && reply.Term == rf.CurrentTerm {
-			rf.NumVote = rf.NumVote + 1
-			if rf.NumVote > len(rf.peers) / 2 {
-				rf.LeaderInit()
-				go rf.LeaderRun()
-			}
-		}
+func (rf *Raft) TermCheck(NowTerm int)  {
+	if rf.CurrentTerm < NowTerm {
+		rf.CurrentTerm = NowTerm
+		rf.FollowerInit()
+		go rf.FollowerRun()
+		//fmt.Printf("Debug message: %d term changed to %d\n", rf.me, NowTerm)
+		return 
 	}
-
-	//fmt.Printf("Debug message: %d send requestvote %d : reply[%d,%t]\n", rf.me, server,reply.Term, reply.VoteGranted)
-
-	return ok
+	return 
 }
-
-/*
-AppendEntries
-*/
 
 type AppendEntriesArgs struct {
 	Term int
@@ -259,10 +167,12 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	/*
 	fmt.Printf("Debug message: %d being calling : args[(term)%d,(leader)%d], nowterm[%d]\n", 
 	rf.me, 
 	args.Term,args.LeaderId,
 	rf.CurrentTerm)
+	*/
 
 	// term check, self late
 	rf.TermCheck(args.Term)
@@ -287,28 +197,15 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 	// Case 3: All right
 	reply.Success = true
-}
-
-func (rf *Raft) angleBeatsOne(server int, args AppendEntriesArgs, reply *AppendEntriesReply) {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	if ok != true {
-		return
+	// Case 3.1: conflict or lack
+	if args.PreLogIndex < rf.LastLogIndex() {
+		rf.Log = rf.Log[:args.PreLogIndex + 1]
 	}
-	rf.mu.Lock()
-	rf.TermCheck(reply.Term)
-	rf.mu.Unlock()
-}
+	rf.Log = append(rf.Log, args.Entries...)
 
-func (rf *Raft) angleBeatsAll() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	for i := range rf.peers {
-		// skip myself
-		if i == rf.me {
-			continue
-		}
-		log_ := make([]Logs, 0)
-		go rf.angleBeatsOne(i, AppendEntriesArgs{rf.CurrentTerm, rf.me, -1, -1, log_, rf.CommitIndex}, &AppendEntriesReply{})
+	if args.LeaderCommit > rf.CommitIndex {
+		rf.CommitIndex = min(args.LeaderCommit, rf.LastLogIndex())
+		rf.CommitApplyMsg()
 	}
 }
 
@@ -327,6 +224,80 @@ func (rf *Raft) FollowerRun() {
 				go rf.CandidateRun()
 		}
 	}
+}
+
+func (rf *Raft) FollowerInit() {
+	rf.State = Follower
+	rf.VotedFor = -1
+}
+
+/*
+Candidate Part
+*/
+
+type RequestVoteArgs struct {
+	Term int
+	CandidateId int
+	LastLogIndex int
+	LastLogTerm int
+}
+type RequestVoteReply struct {
+	Term int
+	VoteGranted bool
+}
+
+// example RequestVote RPC handler.
+func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+	/*
+	fmt.Printf("Debug message: requestvote %d[%d] from %d : args[(term)%d,(candidate)%d,%d,%d], reply[%d,%t]\n", 
+		rf.me, rf.VotedFor,args.CandidateId,
+		args.Term,args.CandidateId,args.LastLogIndex,args.LastLogTerm,
+		reply.Term, reply.VoteGranted)
+	*/
+	// Your code here.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// Case 0: too late 
+	rf.TermCheck(args.Term)
+	// Main part
+	reply.Term = rf.CurrentTerm
+	reply.VoteGranted = false
+	// Case 1: too early term
+	if args.Term < rf.CurrentTerm {
+		return
+	}
+	// Case 2: Right term, get votes
+	if	(rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) && 
+		(pair{args.LastLogTerm, args.LastLogIndex}.Islarge(pair{rf.LastLogTerm(), rf.LastLogIndex()}) != -1) {
+			reply.VoteGranted = true
+		rf.VotedFor = args.CandidateId	
+	}
+	if rf.State == Follower {
+		rf.ResetTimerFlag <- true
+	}
+}
+
+func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
+	//fmt.Printf("Debug message: %d[(term)%d] send requestvote %d : args[(term)%d,%d,%d,%d]\n", rf.me, rf.CurrentTerm,server,args.Term,args.CandidateId,args.LastLogIndex,args.LastLogTerm)
+	
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// I'm too late
+	rf.TermCheck(reply.Term)
+	if ok && rf.State == Candidate {
+		if reply.VoteGranted == true && reply.Term == rf.CurrentTerm {
+			rf.NumVote = rf.NumVote + 1
+			if rf.NumVote > len(rf.peers) / 2 {
+				rf.LeaderInit()
+				go rf.LeaderRun()
+			}
+		}
+	}
+
+	//fmt.Printf("Debug message: %d send requestvote %d : reply[%d,%t]\n", rf.me, server,reply.Term, reply.VoteGranted)
+
+	return ok
 }
 
 func (rf *Raft) CandidateRun() {
@@ -352,23 +323,111 @@ func (rf *Raft) CandidateRun() {
 	}
 }
 
+func (rf *Raft) CandidateInit() {
+	rf.State = Candidate
+}
+
+/*
+Leader Part
+*/
+
+func (rf *Raft) CheckCommit() {
+	for n := rf.LastLogIndex(); n > rf.CommitIndex; n -- {
+		if rf.CurrentTerm == rf.Log[n].Term {
+			var count int := 1
+			for i := 0; i < len(rf.peers); i ++ {
+				if i != rf.me && rf.MatchIndex[i] >= n {
+					count += 1
+				}
+				if count > len(rf.peers) / 2 {
+					rf.CommitIndex = n
+					break
+				}
+			}
+			if count > len(rf.peers) / 2 {
+				break
+			}
+		}
+	}
+	if(rf.CommitIndex > rf.LastApplied) {
+		rf.CommitApplyMsg()
+	}
+}
+
+func (rf *Raft) angleBeatsOne(server int, args AppendEntriesArgs, reply *AppendEntriesReply) {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	if ok != true {
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.TermCheck(reply.Term)
+	if rf.State == Leader {
+		if reply.Success == true {
+			rf.NextIndex[server] = rf.NextIndex[server] + len(args.Entries)
+			rf.MatchIndex[server] = rf.NextIndex[server] - 1
+			// check for Commit
+			rf.CheckCommit()
+		} else {
+			rf.NextIndex[server] -= 1
+		}
+	}
+}
+
+func (rf *Raft) angleBeatsAll(Init bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	for i := range rf.peers {
+		// skip myself
+		if i == rf.me {
+			continue
+		}
+		log_ := make([]Logs, 0)
+		if Init == true {
+			go rf.angleBeatsOne(
+				i, 
+				AppendEntriesArgs{rf.CurrentTerm, rf.me, rf.NextIndex[i]-1, rf.Log[rf.NextIndex[i]-1].Term, log_, rf.CommitIndex},
+				&AppendEntriesReply{})
+		} else if {
+			go rf.angleBeatsOne(
+				i,
+				AppendEntriesArgs{rf.CurrentTerm, rf.me, rf.NextIndex[i]-1, rf.Log[rf.NextIndex[i]-1].Term, rf.Log[rf.NextIndex[i]:], rf.CommitIndex},
+				&AppendEntriesReply{})
+		}
+	}
+}
+
 func (rf *Raft) LeaderRun() {
 
-	fmt.Printf("Debug message: %d leader run\n", rf.me)
+	//fmt.Printf("Debug message: %d leader run\n", rf.me)
 	
 	rf.SetTimer(_Heartbeat)
-	rf.angleBeatsAll()
+	rf.angleBeatsAll(true)
 	if rf.State == Leader {	
 		<- rf.Timer.C
 	}
 	// no logs now, so there is no difference
 	for rf.State == Leader {
-		rf.angleBeatsAll()
+		rf.angleBeatsAll(false)
 		rf.SetTimer(_Heartbeat)
 		if rf.State == Leader {	
 			<- rf.Timer.C
 		}
 	}	
+}
+
+func (rf *Raft) LeaderInit() {
+	rf.State = Leader
+
+	rf.NextIndex = make([]int, 0)
+	rf.MatchIndex = make([]int, 0)
+
+	for i := 0; i < len(rf.peers); i ++ {
+		rf.NextIndex = append(rf.NextIndex, len(rf.Log))
+		rf.MatchIndex = append(rf.MatchIndex, 0)
+	}
 }
 
 // save Raft's persistent state to stable storage,
@@ -414,14 +473,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.CurrentTerm
 	isLeader := rf.State == Leader
 
-	if isLeader == false {
-		index = -1
-	} else {
-		rf.Log = append(rf.Log, Logs{term})
+	if isLeader == true {
+		rf.Log = append(rf.Log, Logs{term, command})
 		index = len(rf.Log) - 1
 	}
 	
-	fmt.Printf("Debug message: start [%d] : %d, %d, %t\n", rf.me, index, term, isLeader)
+	//fmt.Printf("Debug message: start [%d] : %d, %d, %t\n", rf.me, index, term, isLeader)
 	return index, term, isLeader
 }
 
@@ -454,7 +511,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here.
 	rf.CurrentTerm = 0
 	rf.Log = make([]Logs, 0)
-	rf.Log = append(rf.Log, Logs{-1})
+	rf.Log = append(rf.Log, Logs{-1, nil})
 	
 	rf.CommitIndex = 0
 	rf.LastApplied = 0
@@ -462,14 +519,22 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.MatchIndex = make([]int, 0)
 	rf.Timer = time.NewTimer(0)
 	rf.ResetTimerFlag = make(chan bool, 1)
+	rf.ApplyChan = applyCh
 
-	fmt.Printf("Debug message: %d init passed\n", rf.me)
+	//fmt.Printf("Debug message: %d init passed\n", rf.me)
 	rf.FollowerInit()
 	
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	go rf.FollowerRun()
+	switch rf.State {
+		case Follower:
+			go rf.FollowerRun()
+		case Leader:
+			go rf.LeaderRun()
+		case Candidate:
+			go rf.CandidateRun()
+	}
 
 	return rf
 }
