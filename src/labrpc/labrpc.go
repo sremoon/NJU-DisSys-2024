@@ -78,6 +78,7 @@ type ClientEnd struct {
 // send an RPC, wait for the reply.
 // the return value indicates success; false means the
 // server couldn't be contacted.
+
 func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
 	req := reqMsg{}
 	req.endname = e.endname
