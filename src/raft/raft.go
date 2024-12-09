@@ -134,7 +134,7 @@ Follower Part
 func (rf *Raft) CommitApplyMsg() {
 	for rf.LastApplied < rf.CommitIndex {
 		rf.LastApplied += 1
-		rf.ApplyChan <- ApplyMsg{rf.LastApplied, rf.Logs[rf.LastApplied].Command}
+		rf.ApplyChan <- ApplyMsg{rf.LastApplied, rf.Log[rf.LastApplied].Command, false, nil}
 	}
 }
 
@@ -210,8 +210,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 }
 
 func (rf *Raft) FollowerRun() {
-
-	fmt.Printf("Debug message: %d follower run\n", rf.me)
+	//fmt.Printf("Debug message: %d follower run\n", rf.me)
 	for rf.State == Follower {
 		rf.SetTimer(_BeCandidate)
 		select {
@@ -302,7 +301,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 
 func (rf *Raft) CandidateRun() {
 	for rf.State == Candidate {
-		fmt.Printf("Debug message: %d candidate run\n", rf.me)
+		//fmt.Printf("Debug message: %d candidate run\n", rf.me)
 		rf.mu.Lock()
 		// vote for self
 		rf.CurrentTerm = rf.CurrentTerm + 1
@@ -334,7 +333,8 @@ Leader Part
 func (rf *Raft) CheckCommit() {
 	for n := rf.LastLogIndex(); n > rf.CommitIndex; n -- {
 		if rf.CurrentTerm == rf.Log[n].Term {
-			var count int := 1
+			var count int
+			count = 1
 			for i := 0; i < len(rf.peers); i ++ {
 				if i != rf.me && rf.MatchIndex[i] >= n {
 					count += 1
@@ -390,7 +390,7 @@ func (rf *Raft) angleBeatsAll(Init bool) {
 				i, 
 				AppendEntriesArgs{rf.CurrentTerm, rf.me, rf.NextIndex[i]-1, rf.Log[rf.NextIndex[i]-1].Term, log_, rf.CommitIndex},
 				&AppendEntriesReply{})
-		} else if {
+		} else {
 			go rf.angleBeatsOne(
 				i,
 				AppendEntriesArgs{rf.CurrentTerm, rf.me, rf.NextIndex[i]-1, rf.Log[rf.NextIndex[i]-1].Term, rf.Log[rf.NextIndex[i]:], rf.CommitIndex},
@@ -488,6 +488,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // in Kill(), but it might be convenient to (for example)
 // turn off debug output from this instance.
 func (rf *Raft) Kill() {
+	fmt.Printf("Debug message: [%d] killing\n", rf.me)
 	// Your code here, if desired.
 }
 
