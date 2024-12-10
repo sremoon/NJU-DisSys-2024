@@ -23,8 +23,9 @@ import "time"
 import "fmt"
 import "math/rand"
 
-// import "bytes"
-// import "encoding/gob"
+// For lab3
+import "bytes"
+import "encoding/gob"
 
 // Sugar for myself
 type pair struct {
@@ -129,7 +130,7 @@ func (rf *Raft) GetState() (int, bool) {
 
 /*
 Follower Part
-*/
+*/ 
 
 func (rf *Raft) CommitApplyMsg() {
 	for rf.LastApplied < rf.CommitIndex {
@@ -141,7 +142,8 @@ func (rf *Raft) CommitApplyMsg() {
 func (rf *Raft) TermCheck(NowTerm int)  {
 	if rf.CurrentTerm < NowTerm {
 		rf.CurrentTerm = NowTerm
-		rf.FollowerInit()
+		rf.persist(1)
+		rf.FollowerInit(false)
 		go rf.FollowerRun()
 		//fmt.Printf("Debug message: %d term changed to %d\n", rf.me, NowTerm)
 		return 
@@ -184,7 +186,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 	// Right term now
 	if rf.State == Candidate {
-		rf.FollowerInit()
+		rf.FollowerInit(false)
 		go rf.FollowerRun()
 	}
 	// Case 2: not right log
@@ -201,7 +203,9 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	if args.PreLogIndex < rf.LastLogIndex() {
 		rf.Log = rf.Log[:args.PreLogIndex + 1]
 	}
+	//fmt.Printf("Debug message: [%d] append args:[%d, %v]\n", rf.me, args.PreLogIndex, args.Entries)
 	rf.Log = append(rf.Log, args.Entries...)
+	rf.persist(3)
 
 	if args.LeaderCommit > rf.CommitIndex {
 		rf.CommitIndex = min(args.LeaderCommit, rf.LastLogIndex())
@@ -225,9 +229,13 @@ func (rf *Raft) FollowerRun() {
 	}
 }
 
-func (rf *Raft) FollowerInit() {
+func (rf *Raft) FollowerInit(IsMake bool) {
 	rf.State = Follower
 	rf.VotedFor = -1
+	// VotedFor changed
+	if IsMake == false {
+		rf.persist(2) 
+	}
 }
 
 /*
@@ -270,6 +278,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		(pair{args.LastLogTerm, args.LastLogIndex}.Islarge(pair{rf.LastLogTerm(), rf.LastLogIndex()}) != -1) {
 			reply.VoteGranted = true
 		rf.VotedFor = args.CandidateId	
+		rf.persist(2)
 	}
 	if rf.State == Follower {
 		rf.ResetTimerFlag <- true
@@ -305,7 +314,9 @@ func (rf *Raft) CandidateRun() {
 		rf.mu.Lock()
 		// vote for self
 		rf.CurrentTerm = rf.CurrentTerm + 1
+		rf.persist(1)
 		rf.VotedFor = rf.me
+		rf.persist(2)
 		rf.NumVote = 1
 		rf.SetTimer(_BeCandidate)
 		// ask for votes
@@ -362,15 +373,16 @@ func (rf *Raft) angleBeatsOne(server int, args AppendEntriesArgs, reply *AppendE
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
+	
 	rf.TermCheck(reply.Term)
 	if rf.State == Leader {
 		if reply.Success == true {
-			rf.NextIndex[server] = rf.NextIndex[server] + len(args.Entries)
+			rf.NextIndex[server] = min(len(rf.Log), rf.NextIndex[server] + len(args.Entries))
 			rf.MatchIndex[server] = rf.NextIndex[server] - 1
+			//fmt.Printf("Debug message: [%d] [(len)%d] reiceve, NextIndex[%d]=%d\n", rf.me, len(rf.Log),server,  rf.NextIndex[server])
 			// check for Commit
 			rf.CheckCommit()
-		} else {
+		} else if rf.CurrentTerm >= reply.Term {
 			rf.NextIndex[server] -= 1
 		}
 	}
@@ -379,21 +391,32 @@ func (rf *Raft) angleBeatsOne(server int, args AppendEntriesArgs, reply *AppendE
 func (rf *Raft) angleBeatsAll(Init bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	//fmt.Printf("Debug message: [%d] Heartbeat\n", rf.me)
 	for i := range rf.peers {
 		// skip myself
 		if i == rf.me {
 			continue
 		}
-		log_ := make([]Logs, 0)
+		Log_ := make([]Logs, 0)
 		if Init == true {
 			go rf.angleBeatsOne(
 				i, 
-				AppendEntriesArgs{rf.CurrentTerm, rf.me, rf.NextIndex[i]-1, rf.Log[rf.NextIndex[i]-1].Term, log_, rf.CommitIndex},
+				AppendEntriesArgs{rf.CurrentTerm, rf.me, rf.NextIndex[i]-1, rf.Log[rf.NextIndex[i]-1].Term, Log_, rf.CommitIndex},
 				&AppendEntriesReply{})
 		} else {
+			if rf.NextIndex[i] <= rf.LastLogIndex() {	
+				Log_ = rf.Log[rf.NextIndex[i]:]
+			}
+			if(rf.NextIndex[i]-1 > rf.LastLogIndex()) {
+				//fmt.Printf("Debug message: [%d] Outside nextindex[%d]\n", rf.me, i)
+			}
 			go rf.angleBeatsOne(
 				i,
-				AppendEntriesArgs{rf.CurrentTerm, rf.me, rf.NextIndex[i]-1, rf.Log[rf.NextIndex[i]-1].Term, rf.Log[rf.NextIndex[i]:], rf.CommitIndex},
+				AppendEntriesArgs{rf.CurrentTerm, rf.me, 
+					rf.NextIndex[i]-1, 
+					rf.Log[rf.NextIndex[i]-1].Term, 
+					Log_, 
+					rf.CommitIndex},
 				&AppendEntriesReply{})
 		}
 	}
@@ -403,12 +426,11 @@ func (rf *Raft) LeaderRun() {
 
 	//fmt.Printf("Debug message: %d leader run\n", rf.me)
 	
-	rf.SetTimer(_Heartbeat)
 	rf.angleBeatsAll(true)
+	rf.SetTimer(_Heartbeat)
 	if rf.State == Leader {	
 		<- rf.Timer.C
 	}
-	// no logs now, so there is no difference
 	for rf.State == Leader {
 		rf.angleBeatsAll(false)
 		rf.SetTimer(_Heartbeat)
@@ -433,25 +455,28 @@ func (rf *Raft) LeaderInit() {
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist() {
+func (rf *Raft) persist(event int) {
 	// Your code here.
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	// Your code here.
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.CurrentTerm)
+	d.Decode(&rf.VotedFor)
+	d.Decode(&rf.Log)
+	//fmt.Printf("Debug message: [%d] readpersist Log %d\n", rf.me, len(rf.Log))
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -475,10 +500,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	if isLeader == true {
 		rf.Log = append(rf.Log, Logs{term, command})
+		rf.persist(4)
 		index = len(rf.Log) - 1
+		//fmt.Printf("Debug message: start [%d] : %d, %d, %t\n", rf.me, index, term, isLeader)
 	}
 	
-	//fmt.Printf("Debug message: start [%d] : %d, %d, %t\n", rf.me, index, term, isLeader)
 	return index, term, isLeader
 }
 
@@ -523,7 +549,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.ApplyChan = applyCh
 
 	//fmt.Printf("Debug message: %d init passed\n", rf.me)
-	rf.FollowerInit()
+	rf.FollowerInit(true)
 	
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
